@@ -55,7 +55,7 @@ ws_res = None
 try:
     client = init_connection()
     if client:
-        sheet = open_by_url("https://docs.google.com/spreadsheets/d/18iRYa5Y5pj8RoXViAPiFKHZ-OOEE1u2_Y50GO4oH50o/edit?usp=sharing")
+        sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/18iRYa5Y5pj8RoXViAPiFKHZ-OOEE1u2_Y50GO4oH50o/edit?usp=sharing")
         ws_pronos = sheet.worksheet("Pronostics")
         ws_res = sheet.worksheet("Resultats")
 except Exception as e:
