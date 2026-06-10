@@ -47,7 +47,6 @@ def init_connection():
         return gspread.authorize(credentials)
     return None
 
-# Initialisation globale (Correctif du NameError)
 sheet = None
 ws_pronos = None
 ws_res = None
@@ -55,7 +54,8 @@ ws_res = None
 try:
     client = init_connection()
     if client:
-        sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/18iRYa5Y5pj8RoXViAPiFKHZ-OOEE1u2_Y50GO4oH50o/edit")
+        # L'URL a été intégrée ici !
+        sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/18iRYa5Y5pj8RoXViAPiFKHZ-OOEE1u2_Y50GO4oH50o/edit?usp=sharing")
         ws_pronos = sheet.worksheet("Pronostics")
         ws_res = sheet.worksheet("Resultats")
 except Exception as e:
@@ -67,7 +67,6 @@ resultats_officiels = {'1ers': {}, '2es': {}, 'repeches': [], 'qualifies_8es': [
 
 if sheet and ws_pronos and ws_res:
     try:
-        # Charger les pronostics des joueurs
         raw_p = ws_pronos.get_all_records()
         for row in raw_p:
             part = str(row.get("Participant", ""))
@@ -86,7 +85,6 @@ if sheet and ws_pronos and ws_res:
             elif cat in ['champion', 'pire_equipe']:
                 pools_joueurs[part][cat] = val
 
-        # Charger les résultats officiels
         raw_r = ws_res.get_all_records()
         for row in raw_r:
             cat = str(row.get("Categorie", ""))
@@ -107,31 +105,25 @@ def calculer_score(pool, officiel):
     score = 0
     if not officiel or not officiel.get('1ers'): return 0
 
-    # Phase de Groupes (1ers = 20pts, 2es = 10pts)
     for grp in groupes.keys():
         if pool['1ers'].get(grp) == officiel['1ers'].get(grp): score += 20
         if pool['2es'].get(grp) == officiel['2es'].get(grp): score += 10
             
-    # Repêchés (5 pts par équipe)
     bons_repeches = set(pool.get('repeches', [])) & set(officiel.get('repeches', []))
     score += len(bons_repeches) * 5
 
-    # Palier 16es de finale (Vers les 8es)
     bons_16es = len(set(pool.get('qualifies_8es', [])) & set(officiel.get('qualifies_8es', [])))
     if officiel.get('qualifies_8es'):
         score += 70 if bons_16es >= 15 else 60 if bons_16es >= 13 else 45 if bons_16es >= 10 else 30 if bons_16es >= 7 else 15
 
-    # Palier 8es de finale (Vers les Quarts)
     bons_8es = len(set(pool.get('qualifies_quarts', [])) & set(officiel.get('qualifies_quarts', [])))
     if officiel.get('qualifies_quarts'):
         score += 60 if bons_8es == 8 else 55 if bons_8es == 7 else 50 if bons_8es == 6 else 45 if bons_8es == 5 else bons_8es * 10
 
-    # Palier Quarts
     bons_quarts = len(set(pool.get('qualifies_demies', [])) & set(officiel.get('qualifies_demies', [])))
     if officiel.get('qualifies_demies'):
         score += 60 if bons_quarts == 4 else 50 if bons_quarts == 3 else 40 if bons_quarts == 2 else 30 if bons_quarts == 1 else 0
 
-    # Finalistes & Champion
     bons_finalistes = len(set(pool.get('finalistes', [])) & set(officiel.get('finalistes', [])))
     if officiel.get('finalistes'):
         score += 50 if bons_finalistes == 2 else 25 if bons_finalistes == 1 else 0
@@ -221,7 +213,6 @@ def afficher_formulaire(is_admin=False):
         if pire_equipe != "-":
             rows_to_append.append([ts, joueur_actuel, 'pire_equipe', 'global', pire_equipe] if not is_admin else [cat for cat in ['pire_equipe', 'global', pire_equipe]])
             
-        # CORRECTIF DU BOGUE : On vérifie que ws_res et ws_pronos existent avant d'écrire
         if sheet and ws_pronos and ws_res:
             target_ws = ws_res if is_admin else ws_pronos
             if is_admin:
