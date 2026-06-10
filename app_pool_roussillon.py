@@ -54,51 +54,58 @@ ws_res = None
 try:
     client = init_connection()
     if client:
-        # L'URL a été intégrée ici !
         sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/18iRYa5Y5pj8RoXViAPiFKHZ-OOEE1u2_Y50GO4oH50o/edit?usp=sharing")
         ws_pronos = sheet.worksheet("Pronostics")
         ws_res = sheet.worksheet("Resultats")
 except Exception as e:
-    st.error(f"Erreur de connexion à Google Sheets : {e}")
+    st.error(f"Erreur de configuration Google Sheets : {e}")
+
+# --- CORRECTIF 429 : MISE EN CACHE DES LECTURES ---
+@st.cache_data(ttl=60) # Garde les données en mémoire 60 secondes pour éviter le blocage de l'API
+def fetch_all_data():
+    c = init_connection()
+    if c:
+        try:
+            s = c.open_by_url("https://docs.google.com/spreadsheets/d/18iRYa5Y5pj8RoXViAPiFKHZ-OOEE1u2_Y50GO4oH50o/edit?usp=sharing")
+            return s.worksheet("Pronostics").get_all_records(), s.worksheet("Resultats").get_all_records()
+        except Exception:
+            pass
+    return [], []
 
 # --- RECONSTRUCTION DES DONNÉES DEPUIS LE CLOUD ---
 pools_joueurs = {}
 resultats_officiels = {'1ers': {}, '2es': {}, 'repeches': [], 'qualifies_8es': [], 'qualifies_quarts': [], 'qualifies_demies': [], 'finalistes': [], 'champion': None, 'pire_equipe': None}
 
-if sheet and ws_pronos and ws_res:
-    try:
-        raw_p = ws_pronos.get_all_records()
-        for row in raw_p:
-            part = str(row.get("Participant", ""))
-            cat = str(row.get("Categorie", ""))
-            cle = str(row.get("Cle", ""))
-            val = str(row.get("Valeur", ""))
-            if not part: continue
-            
-            if part not in pools_joueurs:
-                pools_joueurs[part] = {'1ers': {}, '2es': {}, 'repeches': [], 'qualifies_8es': [], 'qualifies_quarts': [], 'qualifies_demies': [], 'finalistes': [], 'champion': None, 'pire_equipe': None}
-            
-            if cat in ['1ers', '2es']:
-                pools_joueurs[part][cat][cle] = val
-            elif cat in ['repeches', 'qualifies_8es', 'qualifies_quarts', 'qualifies_demies', 'finalistes']:
-                if val not in pools_joueurs[part][cat]: pools_joueurs[part][cat].append(val)
-            elif cat in ['champion', 'pire_equipe']:
-                pools_joueurs[part][cat] = val
+raw_p, raw_r = fetch_all_data()
 
-        raw_r = ws_res.get_all_records()
-        for row in raw_r:
-            cat = str(row.get("Categorie", ""))
-            cle = str(row.get("Cle", ""))
-            val = str(row.get("Valeur", ""))
-            
-            if cat in ['1ers', '2es']:
-                resultats_officiels[cat][cle] = val
-            elif cat in ['repeches', 'qualifies_8es', 'qualifies_quarts', 'qualifies_demies', 'finalistes']:
-                if val not in resultats_officiels[cat]: resultats_officiels[cat].append(val)
-            elif cat in ['champion', 'pire_equipe']:
-                resultats_officiels[cat] = val
-    except Exception as e:
-        st.warning(f"Erreur lors de la synchronisation des données : {e}")
+for row in raw_p:
+    part = str(row.get("Participant", ""))
+    cat = str(row.get("Categorie", ""))
+    cle = str(row.get("Cle", ""))
+    val = str(row.get("Valeur", ""))
+    if not part: continue
+    
+    if part not in pools_joueurs:
+        pools_joueurs[part] = {'1ers': {}, '2es': {}, 'repeches': [], 'qualifies_8es': [], 'qualifies_quarts': [], 'qualifies_demies': [], 'finalistes': [], 'champion': None, 'pire_equipe': None}
+    
+    if cat in ['1ers', '2es']:
+        pools_joueurs[part][cat][cle] = val
+    elif cat in ['repeches', 'qualifies_8es', 'qualifies_quarts', 'qualifies_demies', 'finalistes']:
+        if val not in pools_joueurs[part][cat]: pools_joueurs[part][cat].append(val)
+    elif cat in ['champion', 'pire_equipe']:
+        pools_joueurs[part][cat] = val
+
+for row in raw_r:
+    cat = str(row.get("Categorie", ""))
+    cle = str(row.get("Cle", ""))
+    val = str(row.get("Valeur", ""))
+    
+    if cat in ['1ers', '2es']:
+        resultats_officiels[cat][cle] = val
+    elif cat in ['repeches', 'qualifies_8es', 'qualifies_quarts', 'qualifies_demies', 'finalistes']:
+        if val not in resultats_officiels[cat]: resultats_officiels[cat].append(val)
+    elif cat in ['champion', 'pire_equipe']:
+        resultats_officiels[cat] = val
 
 # --- FONCTION DE CALCUL DES POINTS ---
 def calculer_score(pool, officiel):
@@ -141,7 +148,7 @@ def afficher_formulaire(is_admin=False):
     
     if not is_admin:
         if not sheet:
-            st.warning("⚠️ L'application n'est pas connectée à Google Sheets. Mode test local activé.")
+            st.warning("⚠️ L'application n'est pas connectée à Google Sheets.")
         joueur_actuel = st.text_input("Votre Prénom et Nom (ex: Pierre Tremblay) :", key="nom_joueur")
     else:
         joueur_actuel = "Officiel"
@@ -221,9 +228,12 @@ def afficher_formulaire(is_admin=False):
                 target_ws.append_rows(rows_to_append)
             else:
                 target_ws.append_rows(rows_to_append)
+            
+            # CORRECTIF 429 : On force le vidage du cache pour rafraîchir les données immédiatement après l'écriture
+            fetch_all_data.clear()
             st.success("Données synchronisées avec succès sur Google Sheets ! Veuillez rafraîchir la page.")
         else:
-            st.warning("Mode hors-ligne : Sauvegarde locale temporaire. Les données ne sont pas envoyées vers Google Sheets.")
+            st.error("Impossible d'enregistrer : Connexion Google Sheets manquante.")
 
 with tab_saisie:
     afficher_formulaire(is_admin=False)
