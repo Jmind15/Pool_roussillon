@@ -47,10 +47,6 @@ def init_connection():
         return gspread.authorize(credentials)
     return None
 
-sheet = None
-ws_pronos = None
-ws_res = None
-
 try:
     client = init_connection()
     if client:
