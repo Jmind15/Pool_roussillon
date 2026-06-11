@@ -47,21 +47,8 @@ def init_connection():
         return gspread.authorize(credentials)
     return None
 
-sheet = None
-ws_pronos = None
-ws_res = None
-
-try:
-    client = init_connection()
-    if client:
-        sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/18iRYa5Y5pj8RoXViAPiFKHZ-OOEE1u2_Y50GO4oH50o/edit?usp=sharing")
-        ws_pronos = sheet.worksheet("Pronostics")
-        ws_res = sheet.worksheet("Resultats")
-except Exception as e:
-    st.error(f"Erreur de configuration Google Sheets : {e}")
-
-# --- CORRECTIF 429 : MISE EN CACHE DES LECTURES ---
-@st.cache_data(ttl=60) # Garde les données en mémoire 60 secondes pour éviter le blocage de l'API
+# --- MISE EN CACHE DES LECTURES ---
+@st.cache_data(ttl=60)
 def fetch_all_data():
     c = init_connection()
     if c:
@@ -74,7 +61,7 @@ def fetch_all_data():
 
 # --- RECONSTRUCTION DES DONNÉES DEPUIS LE CLOUD ---
 pools_joueurs = {}
-resultats_officiels = {'1ers': {}, '2es': {}, 'repeches': [], 'qualifies_8es': [], 'qualifies_quarts': [], 'qualifies_demies': [], 'finalistes': [], 'champion': None, 'pire_equipe': None}
+resultats_officiels = {'1ers': {}, '2es': {}, 'repeches': [], 'qualifies_8es': [], 'qualifies_quarts': [], 'qualifies_demies': [], 'finalistes': [], 'champion': None, 'pire_equipe': None, 'meilleur_buteur': None}
 
 raw_p, raw_r = fetch_all_data()
 
@@ -86,13 +73,13 @@ for row in raw_p:
     if not part: continue
     
     if part not in pools_joueurs:
-        pools_joueurs[part] = {'1ers': {}, '2es': {}, 'repeches': [], 'qualifies_8es': [], 'qualifies_quarts': [], 'qualifies_demies': [], 'finalistes': [], 'champion': None, 'pire_equipe': None}
+        pools_joueurs[part] = {'1ers': {}, '2es': {}, 'repeches': [], 'qualifies_8es': [], 'qualifies_quarts': [], 'qualifies_demies': [], 'finalistes': [], 'champion': None, 'pire_equipe': None, 'meilleur_buteur': None}
     
     if cat in ['1ers', '2es']:
         pools_joueurs[part][cat][cle] = val
     elif cat in ['repeches', 'qualifies_8es', 'qualifies_quarts', 'qualifies_demies', 'finalistes']:
         if val not in pools_joueurs[part][cat]: pools_joueurs[part][cat].append(val)
-    elif cat in ['champion', 'pire_equipe']:
+    elif cat in ['champion', 'pire_equipe', 'meilleur_buteur']:
         pools_joueurs[part][cat] = val
 
 for row in raw_r:
@@ -104,7 +91,7 @@ for row in raw_r:
         resultats_officiels[cat][cle] = val
     elif cat in ['repeches', 'qualifies_8es', 'qualifies_quarts', 'qualifies_demies', 'finalistes']:
         if val not in resultats_officiels[cat]: resultats_officiels[cat].append(val)
-    elif cat in ['champion', 'pire_equipe']:
+    elif cat in ['champion', 'pire_equipe', 'meilleur_buteur']:
         resultats_officiels[cat] = val
 
 # --- FONCTION DE CALCUL DES POINTS ---
@@ -137,6 +124,13 @@ def calculer_score(pool, officiel):
         
     if officiel.get('champion') and pool.get('champion') == officiel.get('champion'): score += 50
     if officiel.get('pire_equipe') and pool.get('pire_equipe') == officiel.get('pire_equipe'): score += 20
+    
+    # Validation du Golden Boot (avec tolérance sur les majuscules/espaces)
+    if officiel.get('meilleur_buteur') and pool.get('meilleur_buteur'):
+        buteur_officiel = str(officiel['meilleur_buteur']).strip().lower()
+        buteur_pool = str(pool['meilleur_buteur']).strip().lower()
+        if buteur_pool == buteur_officiel:
+            score += 20
 
     return score
 
@@ -147,8 +141,12 @@ def afficher_formulaire(is_admin=False):
     prefix = "admin_" if is_admin else "user_"
     
     if not is_admin:
-        if not sheet:
+        try:
+            c = init_connection()
+            if not c: st.warning("⚠️ L'application n'est pas connectée à Google Sheets.")
+        except:
             st.warning("⚠️ L'application n'est pas connectée à Google Sheets.")
+            
         joueur_actuel = st.text_input("Votre Prénom et Nom (ex: Pierre Tremblay) :", key="nom_joueur")
     else:
         joueur_actuel = "Officiel"
@@ -188,7 +186,12 @@ def afficher_formulaire(is_admin=False):
     finalistes = st.multiselect("Les 2 Finalistes :", qualifies_4 if qualifies_4 else qualifies_32, max_selections=2, key=f"{prefix}fin")
     champion = st.selectbox("Le CHAMPION 🏆 :", ["-"] + finalistes, key=f"{prefix}champ")
     
-    pire_equipe = st.selectbox("La Pire équipe du tournoi (Malus) :", ["-"] + toutes_equipes, key=f"{prefix}pire")
+    st.markdown("<h3 class='section-header'>4. Bonus / Malus</h3>", unsafe_allow_html=True)
+    col_bonus1, col_bonus2 = st.columns(2)
+    with col_bonus1:
+        pire_equipe = st.selectbox("La Pire équipe du tournoi (+20 pts) :", ["-"] + toutes_equipes, key=f"{prefix}pire")
+    with col_bonus2:
+        meilleur_buteur = st.text_input("Meilleur Buteur / Golden Boot (+20 pts) :", placeholder="ex: Kylian Mbappé", key=f"{prefix}buteur")
 
     st.markdown("<br>", unsafe_allow_html=True)
     
@@ -219,19 +222,25 @@ def afficher_formulaire(is_admin=False):
             rows_to_append.append([ts, joueur_actuel, 'champion', 'global', champion] if not is_admin else [cat for cat in ['champion', 'global', champion]])
         if pire_equipe != "-":
             rows_to_append.append([ts, joueur_actuel, 'pire_equipe', 'global', pire_equipe] if not is_admin else [cat for cat in ['pire_equipe', 'global', pire_equipe]])
+        if meilleur_buteur and meilleur_buteur.strip() != "":
+            rows_to_append.append([ts, joueur_actuel, 'meilleur_buteur', 'global', meilleur_buteur.strip()] if not is_admin else [cat for cat in ['meilleur_buteur', 'global', meilleur_buteur.strip()]])
             
-        if sheet and ws_pronos and ws_res:
-            target_ws = ws_res if is_admin else ws_pronos
-            if is_admin:
-                target_ws.clear()
-                target_ws.append_row(['Categorie', 'Cle', 'Valeur'])
-                target_ws.append_rows(rows_to_append)
-            else:
-                target_ws.append_rows(rows_to_append)
-            
-            # CORRECTIF 429 : On force le vidage du cache pour rafraîchir les données immédiatement après l'écriture
-            fetch_all_data.clear()
-            st.success("Données synchronisées avec succès sur Google Sheets ! Veuillez rafraîchir la page.")
+        c = init_connection()
+        if c:
+            try:
+                s = c.open_by_url("https://docs.google.com/spreadsheets/d/18iRYa5Y5pj8RoXViAPiFKHZ-OOEE1u2_Y50GO4oH50o/edit?usp=sharing")
+                target_ws = s.worksheet("Resultats") if is_admin else s.worksheet("Pronostics")
+                if is_admin:
+                    target_ws.clear()
+                    target_ws.append_row(['Categorie', 'Cle', 'Valeur'])
+                    target_ws.append_rows(rows_to_append)
+                else:
+                    target_ws.append_rows(rows_to_append)
+                
+                fetch_all_data.clear()
+                st.success("Données synchronisées avec succès sur Google Sheets ! Veuillez rafraîchir la page.")
+            except Exception as e:
+                st.error(f"Erreur d'écriture Sheets : {e}")
         else:
             st.error("Impossible d'enregistrer : Connexion Google Sheets manquante.")
 
