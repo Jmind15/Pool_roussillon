@@ -47,7 +47,20 @@ def init_connection():
         return gspread.authorize(credentials)
     return None
 
-# --- MISE EN CACHE DES LECTURES ---
+sheet = None
+ws_pronos = None
+ws_res = None
+
+try:
+    client = init_connection()
+    if client:
+        sheet = client.open_by_url("https://docs.google.com/spreadsheets/d/18iRYa5Y5pj8RoXViAPiFKHZ-OOEE1u2_Y50GO4oH50o/edit?usp=sharing")
+        ws_pronos = sheet.worksheet("Pronostics")
+        ws_res = sheet.worksheet("Resultats")
+except Exception as e:
+    st.error(f"Erreur de configuration Google Sheets : {e}")
+
+# --- MISE EN CACHE DES LECTURES POUR ÉVITER L'ERREUR 429 ---
 @st.cache_data(ttl=60)
 def fetch_all_data():
     c = init_connection()
@@ -125,28 +138,26 @@ def calculer_score(pool, officiel):
     if officiel.get('champion') and pool.get('champion') == officiel.get('champion'): score += 50
     if officiel.get('pire_equipe') and pool.get('pire_equipe') == officiel.get('pire_equipe'): score += 20
     
-    # Validation du Golden Boot (avec tolérance sur les majuscules/espaces)
     if officiel.get('meilleur_buteur') and pool.get('meilleur_buteur'):
-        buteur_officiel = str(officiel['meilleur_buteur']).strip().lower()
-        buteur_pool = str(pool['meilleur_buteur']).strip().lower()
-        if buteur_pool == buteur_officiel:
+        if str(pool['meilleur_buteur']).strip().lower() == str(officiel['meilleur_buteur']).strip().lower():
             score += 20
 
     return score
 
-# --- INTERFACE (ONGLETS) ---
-tab_saisie, tab_admin, tab_classement = st.tabs(["📝 Soumettre mon Pool", "⚙️ Administration", "📊 Classement Général"])
+# --- INTERFACE (QUATRE ONGLETS) ---
+tab_saisie, tab_admin, tab_classement, tab_sommaire = st.tabs([
+    "📝 Soumettre mon Pool", 
+    "⚙️ Administration", 
+    "📊 Classement Général", 
+    "🔍 Sommaire des Choix"
+])
 
 def afficher_formulaire(is_admin=False):
     prefix = "admin_" if is_admin else "user_"
     
     if not is_admin:
-        try:
-            c = init_connection()
-            if not c: st.warning("⚠️ L'application n'est pas connectée à Google Sheets.")
-        except:
+        if not sheet:
             st.warning("⚠️ L'application n'est pas connectée à Google Sheets.")
-            
         joueur_actuel = st.text_input("Votre Prénom et Nom (ex: Pierre Tremblay) :", key="nom_joueur")
     else:
         joueur_actuel = "Officiel"
@@ -241,8 +252,6 @@ def afficher_formulaire(is_admin=False):
                 st.success("Données synchronisées avec succès sur Google Sheets ! Veuillez rafraîchir la page.")
             except Exception as e:
                 st.error(f"Erreur d'écriture Sheets : {e}")
-        else:
-            st.error("Impossible d'enregistrer : Connexion Google Sheets manquante.")
 
 with tab_saisie:
     afficher_formulaire(is_admin=False)
@@ -252,9 +261,8 @@ with tab_admin:
 
 with tab_classement:
     st.markdown("<h3 class='section-header'>📊 Classement en Direct du Club</h3>", unsafe_allow_html=True)
-    
     if not resultats_officiels or not resultats_officiels.get('1ers'):
-        st.info("Le tournoi n'a pas encore débuté ou aucun résultat officiel n'a été saisi par l'administrateur.")
+        st.info("Le tournoi n'a pas encore débuté ou aucun résultat officiel n'a été saisi.")
         
     scores = []
     for nom_joueur, data_pool in pools_joueurs.items():
@@ -262,9 +270,58 @@ with tab_classement:
         scores.append({"Rang": 1, "Nom du Participant": nom_joueur, "Points": pts})
             
     if scores:
-        df_scores = pd.DataFrame(scores)
-        df_scores = df_scores.sort_values(by="Points", ascending=False).reset_index(drop=True)
+        df_scores = pd.DataFrame(scores).sort_values(by="Points", ascending=False).reset_index(drop=True)
         df_scores["Rang"] = df_scores.index + 1
         st.dataframe(df_scores.set_index("Rang"), use_container_width=True)
     else:
         st.write("En attente des premières soumissions des membres du club.")
+
+# --- NOUVEL ONGLET : SOMMAIRE DES CHOIX DES COLLÈGUES ---
+with tab_sommaire:
+    st.markdown("<h3 class='section-header'>🔍 Visualiser l'arbre complet d'un participant</h3>", unsafe_allow_html=True)
+    
+    if not pools_joueurs:
+        st.info("Aucun prono n'a encore été enregistré par les membres du club.")
+    else:
+        # Menu déroulant contenant la liste de tous ceux qui ont soumis un prono
+        collaborateur = st.selectbox("Choisissez un collègue pour voir ses prédictions :", sorted(list(pools_joueurs.keys())))
+        
+        if collaborateur:
+            p_data = pools_joueurs[collaborateur]
+            
+            # 1. Résumé des Groupes
+            st.subheader("1. Classement des Poules")
+            gr_rows = []
+            for grp in groupes.keys():
+                gr_rows.append({
+                    "Groupe": grp,
+                    "Vainqueur (1er)": p_data['1ers'].get(grp, "-"),
+                    "Deuxième (2e)": p_data['2es'].get(grp, "-")
+                })
+            st.table(pd.DataFrame(gr_rows).set_index("Groupe"))
+            
+            st.write(f"**Les 8 troisièmes repêchés pour les 16es :** {', '.join(p_data.get('repeches', [])) if p_data.get('repeches') else 'Aucun'}")
+            
+            # 2. Arbre éliminatoire en cascade
+            st.subheader("2. Tableau Éliminatoire Prédit")
+            col_tree1, col_tree2 = st.columns(2)
+            with col_tree1:
+                st.write("**Équipes en 8es de finale :**")
+                st.caption(", ".join(p_data.get('qualifies_8es', [])) if p_data.get('qualifies_8es') else "-")
+                
+                st.write("**Équipes en Quarts de finale :**")
+                st.caption(", ".join(p_data.get('qualifies_quarts', [])) if p_data.get('qualifies_quarts') else "-")
+                
+            with col_tree2:
+                st.write("**Équipes en Demi-finales :**")
+                st.caption(", ".join(p_data.get('qualifies_demies', [])) if p_data.get('qualifies_demies') else "-")
+                
+                st.write("**Les deux Finalistes :**")
+                st.caption(", ".join(p_data.get('finalistes', [])) if p_data.get('finalistes') else "-")
+            
+            st.markdown(f"### 🏆 Champion du Monde pronostiqué : **{p_data.get('champion', '-')}**")
+            
+            # 3. Bonus / Malus
+            st.subheader("3. Choix Annexes")
+            st.write(f"❌ **Pire équipe de la compétition :** {p_data.get('pire_equipe', '-')}")
+            st.write(f"👟 **Soulier d'Or (Golden Boot) :** {p_data.get('meilleur_buteur', '-')}")
